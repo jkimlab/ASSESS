@@ -18,7 +18,7 @@ mkdir $OUTDIR
 echo "----------+"
 date
 echo "## [START] generating command lines using $INPUTDIR/params_runASSESSdocker.txt and $INPUTDIR/params_lib.txt"
-docker run --rm -v $INPUTDIR:/raca_wd/run_test -t racaw:latest making_cmd.pl -lib /raca_wd/run_test/params_lib.txt -params /raca_wd/run_test/params_runASSESSdocker.txt -p $CPU > $OUTDIR/run_ASSESS_cmd.sh
+docker run --rm -v $INPUTDIR:/assess_wd/run_test -t racaw:latest making_cmd.pl -lib /assess_wd/run_test/params_lib.txt -params /assess_wd/run_test/params_runASSESSdocker.txt -p $CPU > $OUTDIR/run_ASSESS_cmd.sh
 echo "## [ END ] command lines are created [ $OUTDIR/run_ASSESS_cmd.sh ]"
 echo "## [START] command line file post-processing"
 sed -i 's/\r//g' $OUTDIR/run_ASSESS_cmd.sh

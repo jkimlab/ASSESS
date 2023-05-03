@@ -1,0 +1,713 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+use FindBin qw($Bin);
+use Cwd;
+use Cwd 'abs_path';
+use Getopt::Long;
+
+my $params_f = undef;
+my $out_dir = undef;
+my $resolution = 150000;
+my $min_adjscore = 0.01;
+my $numt = 4;
+my $rp = 0;
+my $fill = 0;
+my $ext = 0;
+
+my $cmdline = join " ", $0, @ARGV;
+if (!GetOptions('p=s' => \$params_f, 'o=s' => \$out_dir, 'r=i' => \$resolution, 
+                's=f' => \$min_adjscore, 't=i' => \$numt, 'rp' => \$rp , 'f' => \$fill, 'e' => \$ext)) { usage(""); }
+
+usage("Missing argument(s): -p and/or -o") if (!defined($params_f) || !defined($out_dir));
+usage("Invalid argument: -s") if ($min_adjscore < 0 || $min_adjscore > 1);
+usage("Invalid argument(s): -t and/or -r") if ($numt <= 0 || $resolution <= 0);
+
+my %params = read_parameters($params_f);
+`mkdir -p $out_dir`;
+$out_dir = abs_path($out_dir);
+
+my $param_dir = "$out_dir/param";
+my $read_dir = "$out_dir/read";
+my $sf_dir = "$out_dir/SFs";
+my $log_dir = "$out_dir/logdir";
+my $fill_dir = "$out_dir/fill";
+
+`mkdir -p $param_dir $read_dir $sf_dir $log_dir`;
+
+my $refspc = $params{"REFSPC"};
+my $tarspc = $params{"TARSPC"};
+my $chainnet_dir = $params{"CHAINNET_DIR"};
+
+my $sr_map_dir = $params{"SR_MAPPING_DIR"};
+my $sr_cov_dir = "$read_dir/SR_Coverage";
+my $sr_libstat_f = "$read_dir/SR_insertlib_stat.txt";
+my $sr_covdist_f = "$read_dir/SR_cov_dist.txt";
+
+my $linkr_map_dir = $params{"LINKR_MAPPING_DIR"};
+my $linkr_cov_dir = "$read_dir/LinkR_Coverage";
+my $linkr_libstat_f = "$read_dir/LinkR_insertlib_stat.txt";
+my $linkr_covdist_f = "$read_dir/LinkR_cov_dist.txt";
+
+my $lr_map_dir = $params{"LR_MAPPING_DIR"};
+my $lr_cov_dir = "$read_dir/LR_Coverage";
+my $lr_covdist_f = "$read_dir/LR_cov_dist.txt";
+
+my $min_con_read = $params{"MIN_CON_READ"};
+my $window_size = $params{"WINDOW_SIZE"};
+my $flank_size = $params{"FLANK_SIZE"};
+my $fjoinbreak_f = $params{"FORCE_JOIN_BREAK"};
+my $min_mapq = $params{"MIN_MAPQ"};
+my $fasize_f = "$param_dir/seqsize.txt";
+my $tree_f = "$param_dir/tree.txt";
+my $res_f = "$param_dir/resolution.txt";
+my $rp_f = "$param_dir/rp.txt";
+my $labelcutoff_f = "$param_dir/labelcutoff.txt";
+my $seq_f = $params{"SEQFILE"};
+
+print STDERR "=============================================\n";
+print STDERR "=                   RACA2                   =\n";       
+print STDERR "=============================================\n\n";
+
+my $res_old = 0;
+if (-f $res_f) { 
+    $res_old =`cat $res_f`; 
+    chomp($res_old);
+}
+`echo '$resolution' > $res_f`;
+
+my $rp_old = -1;
+if (-f $rp_f){
+	$rp_old = `cat $rp_f`;
+	chomp($rp_old);
+}
+`echo '$rp' > $rp_f`;
+
+my $par_changed = 0;
+my %prev_params = ();
+if (-f "$param_dir/__params.txt") { %prev_params = read_parameters("$param_dir/__params.txt"); } 
+
+write_labels(\%params, $labelcutoff_f); 
+`echo $cmdline > $param_dir/__cmdline.txt`; 
+`cp $params_f $param_dir/__params.txt`;
+
+if (!defined($prev_params{"SEQFILE"}) || $prev_params{"SEQFILE"} ne $seq_f) {
+	`$Bin/script/get_faSize.pl $seq_f > $fasize_f`;
+} else {
+    if (!(-f $fasize_f)) {
+	    print STDERR "\nError: File not found: $fasize_f\n";	
+	    print STDERR "       Run by specifying a new output directory\n";
+	    exit(1);
+    }
+}
+
+my $sr_avgcov_f = "$read_dir/SR_avgcov.txt";
+if (defined($sr_map_dir)) {
+    if (!defined($prev_params{"SR_MAPPING_DIR"}) || $prev_params{"SR_MAPPING_DIR"} ne $sr_map_dir) {
+	    print STDERR "Processing short read mapping data...\n";
+	    my $tmp_dir = "$read_dir/sr_tmp";
+	    `mkdir -p $tmp_dir`;
+        `$Bin/script/process_mapfiles.SR_LnR.pl $sr_map_dir $numt $tmp_dir $sr_cov_dir $fasize_f $sr_libstat_f $min_mapq > $log_dir/sr_mapfiles.log 2>&1`; 
+	    `rm -rf $tmp_dir`;
+    } else {
+		if (!(-f $sr_libstat_f && -d $sr_cov_dir)) {
+			print STDERR "\nError: The following short read processing data not found\n";
+            print STDERR "       File: $sr_libstat_f, Dir: $sr_cov_dir\n"; 
+	        print STDERR "       Run by specifying a new output directory\n";
+			exit(1);
+		}
+	}
+}
+
+my $linkr_avgcov_f = "$read_dir/LinkR_avgcov.txt";
+if (defined($linkr_map_dir)) {
+    if (!defined($prev_params{"LINKR_MAPPING_DIR"}) || $prev_params{"LINKR_MAPPING_DIR"} ne $linkr_map_dir) {
+	    print STDERR "Processing linked read mapping data...\n";
+	    my $tmp_dir = "$read_dir/Linkr_tmp";
+	    `mkdir -p $tmp_dir`;
+        `$Bin/script/process_mapfiles.SR_LnR.pl $linkr_map_dir $numt $tmp_dir $linkr_cov_dir $fasize_f $linkr_libstat_f $min_mapq > $log_dir/Linkr_mapfiles.log 2>&1`; 
+	    `rm -rf $tmp_dir`;
+    } else {
+		if (!(-f $linkr_libstat_f && -d $linkr_cov_dir)) {
+			print STDERR "\nError: The following linked read processing data not found\n";
+            print STDERR "       File: $linkr_libstat_f, Dir: $linkr_cov_dir\n"; 
+	        print STDERR "       Run by specifying a new output directory\n";
+			exit(1);
+		}
+	}
+}
+
+my $lr_avgcov_f = "$read_dir/LR_avgcov.txt";
+if (defined($lr_map_dir)) {
+    if (!defined($prev_params{"LR_MAPPING_DIR"}) || $prev_params{"LR_MAPPING_DIR"} ne $lr_map_dir) {
+	    print STDERR "Processing long read mapping data...\n";
+	    my $tmp_dir = "$read_dir/lr_tmp";
+	    `mkdir -p $tmp_dir`;
+        `$Bin/script/process_mapfiles.LR.pl $lr_map_dir $numt $tmp_dir $lr_cov_dir $min_mapq $fasize_f > $log_dir/lr_mapfiles.log 2>&1`; 
+	    `rm -rf $tmp_dir`;
+    } else {
+		if (!(-d $lr_cov_dir)) {
+			print STDERR "\nError: The following long read processing data not found\n";
+            print STDERR "       Dir: $lr_cov_dir\n"; 
+	        print STDERR "       Run by specifying a new output directory\n";
+			exit(1);
+		}
+	}
+}
+
+`echo '$params{"TREE"}' > $tree_f`;
+
+if (sf_param_changed(\%params, \%prev_params, $resolution, $res_old)) {
+	print STDERR "Constructing syntenic fragments...\n"; 
+    
+    my $cwd = getcwd();
+	`$Bin/script/make_config.pl $refspc $tarspc $resolution $chainnet_dir $tree_f > $sf_dir/config.file`;
+	chdir($sf_dir);
+	`$Bin/code/makeBlocks/makeBlocks ./config.file . > $log_dir/make_SFs.log 2>&1`;
+
+    if (!(-f "$sf_dir/Genomes.Order")) {
+		print STDERR "\nError: Failed to generate syntenic fragments in the '$sf_dir' directory.\n";
+        print STDERR "       Check logs in $log_dir/make_SFs.log\n"; 
+	    exit(1);
+    }
+
+	chdir($cwd);
+	`$Bin/script/create_blocklist.pl $refspc $tarspc $fasize_f $sf_dir`; 
+} else {
+    if (!(-f "$sf_dir/Genomes.Order") || !(-f "$sf_dir/block_list.txt")) {
+		print STDERR "\nError: Output file(s) not found in the '$sf_dir' directory.\n";
+	    print STDERR "       Run by changing parameters related with the generation of syntenic fragments\n";
+	    exit(1);
+    }
+}
+
+if (defined($sr_map_dir)) {
+    if (sf_param_changed(\%params, \%prev_params, $resolution, $res_old) || sr_param_changed(\%params, \%prev_params)) {
+	    print STDERR "Calculating short read coverage distribution...\n";
+	    `$Bin/script/estimate_covdist.pl $sf_dir/block_list.txt $flank_size $window_size $sr_cov_dir $numt $sr_covdist_f $sr_avgcov_f $read_dir`;
+    } else {
+	    if (!(-f $sr_covdist_f)) {
+		    print STDERR "\nError: File not exist: $sr_covdist_f\n";	
+	        print STDERR "       Run by specifying a new output directory\n";
+		    exit(1);
+	    }
+    }
+}
+
+if (defined($linkr_map_dir)) {
+    if (sf_param_changed(\%params, \%prev_params, $resolution, $res_old) || linkr_param_changed(\%params, \%prev_params)) {
+	    print STDERR "Calculating linked read coverage distribution...\n";
+	    `$Bin/script/estimate_covdist.pl $sf_dir/block_list.txt $flank_size $window_size $linkr_cov_dir $numt $linkr_covdist_f $linkr_avgcov_f $read_dir`;
+    } else {
+	    if (!(-f $linkr_covdist_f)) {
+		    print STDERR "\nError: File not exist: $linkr_covdist_f\n";	
+	        print STDERR "       Run by specifying a new output directory\n";
+		    exit(1);
+	    }
+    }
+}
+
+if (defined($lr_map_dir)) {
+    if (sf_param_changed(\%params, \%prev_params, $resolution, $res_old) || lr_param_changed(\%params, \%prev_params)) {
+	    print STDERR "Calculating long read coverage distribution...\n";
+	    `$Bin/script/estimate_covdist.pl $sf_dir/block_list.txt $flank_size $window_size $lr_cov_dir $numt $lr_covdist_f $lr_avgcov_f $read_dir`;
+    } else {
+	    if (!(-f $lr_covdist_f)) {
+		    print STDERR "\nError: File not exist: $lr_covdist_f\n";	
+	        print STDERR "       Run by specifying a new output directory\n";
+		    exit(1);
+	    }
+    }
+}
+
+my $sr_inter_f = "$sf_dir/SR_inter_block_info.txt";
+my $sr_intra_f = "$sf_dir/SR_intra_block_info.txt";
+
+if (defined($sr_map_dir)) {
+    if (sf_param_changed(\%params, \%prev_params, $resolution, $res_old) || sr_param_changed(\%params, \%prev_params)) {
+        print STDERR "Collecting short read link information...\n";
+        `$Bin/script/wrap_get_interblock_scores.SR.pl $sr_libstat_f $sf_dir/block_list.txt $sf_dir/block_list.ext.txt $fasize_f $sr_map_dir $sr_inter_f $read_dir $numt $min_mapq`;
+        `$Bin/script/wrap_get_intrablock_scores.pl $sf_dir/block_list.txt $flank_size $window_size $sr_cov_dir $numt $sr_intra_f $sr_avgcov_f $read_dir $min_mapq`;
+    } else {
+        if (!(-f $sr_inter_f)) {
+            print STDERR "\nError: File not found: $sr_inter_f\n";
+	        print STDERR "       Run by specifying a new output directory\n";
+            exit(1);
+        }
+        
+        if (!(-f $sr_intra_f)) {
+            print STDERR "\nError: File not found: $sr_intra_f\n";
+	        print STDERR "       Run by specifying a new output directory\n";
+            exit(1);
+        }
+    }
+}
+
+my $linkr_inter_f = "$sf_dir/LinkR_inter_block_info.txt";
+my $linkr_intra_f = "$sf_dir/LinkR_intra_block_info.txt";
+
+if (defined($linkr_map_dir)) {
+    if (sf_param_changed(\%params, \%prev_params, $resolution, $res_old) || linkr_param_changed(\%params, \%prev_params)) {
+        print STDERR "Collecting Link linked read link information...\n";
+        `$Bin/script/wrap_get_interblock_scores.SR.pl $linkr_libstat_f $sf_dir/block_list.txt $sf_dir/block_list.ext.txt $fasize_f $linkr_map_dir $linkr_inter_f $read_dir $numt $min_mapq`;
+        `$Bin/script/wrap_get_intrablock_scores.pl $sf_dir/block_list.txt $flank_size $window_size $linkr_cov_dir $numt $linkr_intra_f $linkr_avgcov_f $read_dir $min_mapq`;
+    } else {
+        if (!(-f $linkr_inter_f)) {
+            print STDERR "\nError: File not found: $linkr_inter_f\n";
+	        print STDERR "       Run by specifying a new output directory\n";
+            exit(1);
+        }
+        
+        if (!(-f $linkr_intra_f)) {
+            print STDERR "\nError: File not found: $linkr_intra_f\n";
+	        print STDERR "       Run by specifying a new output directory\n";
+            exit(1);
+        }
+    }
+}
+
+my $lr_inter_f = "$sf_dir/LR_inter_block_info.txt";
+my $lr_intra_f = "$sf_dir/LR_intra_block_info.txt";
+
+if (defined($lr_map_dir)) {
+    if (sf_param_changed(\%params, \%prev_params, $resolution, $res_old) || lr_param_changed(\%params, \%prev_params)) {
+        print STDERR "Collecting long read link information...\n";
+        `$Bin/script/wrap_get_interblock_scores.LR.pl $sf_dir/block_list.txt $sf_dir/block_list.txt $lr_map_dir $lr_inter_f $read_dir $numt $min_mapq`;
+        `$Bin/script/wrap_get_intrablock_scores.pl $sf_dir/block_list.txt $flank_size $window_size $lr_cov_dir $numt $lr_intra_f $lr_avgcov_f $read_dir $min_mapq`;
+    } else {
+        if (!(-f $lr_inter_f)) {
+            print STDERR "\nError: File not found: $lr_inter_f\n";
+	        print STDERR "       Run by specifying a new output directory\n";
+            exit(1);
+        }
+        
+        if (!(-f $lr_intra_f)) {
+            print STDERR "\nError: File not found: $lr_intra_f\n";
+	        print STDERR "       Run by specifying a new output directory\n";
+            exit(1);
+        }
+    }
+}
+    
+if (sf_param_changed(\%params, \%prev_params, $resolution, $res_old)) {
+    `$Bin/script/ext_spcgroups.pl $sf_dir/config.file $sf_dir`;
+    `$Bin/script/estimate_bpdist.pl $tarspc $sf_dir > $sf_dir/bpdist.txt`;
+    `$Bin/script/estimate_bpdist_out.pl $resolution $tarspc $sf_dir >> $sf_dir/bpdist.txt`;
+
+    my $out = `head -1 $sf_dir/$refspc.joins`;
+    chomp($out);
+    my $numblocks = substr($out, 1);
+
+    my $jcalpha = `$Bin/script/estparJC.pl $numblocks $tarspc $tree_f $sf_dir/bpdist.txt`;
+    chomp($jcalpha);
+    print STDERR "JC=$jcalpha\n";
+    `$Bin/script/create_gfile.pl $sf_dir`;
+
+    print STDERR "Computing adjacency probabilities...\n";
+    my $curdir = getcwd;
+    chdir($sf_dir);
+    `$Bin/code/inferAdjProb $refspc $jcalpha $tree_f Genomes.Order.new`;
+    chdir($curdir);
+
+    `$Bin/script/refine_adjprob.pl $sf_dir/block_list.txt $sf_dir/adjacencies.prob $sf_dir/block_consscores.txt $sf_dir/block_consscores.bid.txt`;
+
+    if (defined($fjoinbreak_f) && -f $fjoinbreak_f) {
+        `$Bin/script/create_joinbreak_list.pl $sf_dir/block_list.txt $fjoinbreak_f > $sf_dir/joinbreak_list.txt`;
+    }
+}
+
+if (defined($sr_map_dir)) {
+    if (sr_param_changed_mincon(\%params, \%prev_params) || sf_param_changed(\%params, \%prev_params, $resolution, $res_old)) {
+	    print STDERR "Calculating short read link scores...\n";
+        `$Bin/script/compute_linkscores.pl $sr_inter_f $sr_intra_f $min_con_read $sr_covdist_f $sf_dir/block_linkscores.SR.bid.txt`;
+    } else {
+        if (!(-f "$sf_dir/block_linkscores.SR.bid.txt")) {
+            print STDERR "\nError: File not found: $sf_dir/block_linkscores.SR.bid.txt\n";
+	        print STDERR "       Run by specifying a new output directory\n";
+            exit(1);
+        }
+    }
+}
+
+if (defined($linkr_map_dir)) {
+    if (linkr_param_changed_mincon(\%params, \%prev_params) || sf_param_changed(\%params, \%prev_params, $resolution, $res_old)) {
+	    print STDERR "Calculating linked read link scores...\n";
+        `$Bin/script/compute_linkscores.pl $linkr_inter_f $linkr_intra_f $min_con_read $linkr_covdist_f $sf_dir/block_linkscores.LinkR.bid.txt`;
+    } else {
+        if (!(-f "$sf_dir/block_linkscores.LinkR.bid.txt")) {
+            print STDERR "\nError: File not found: $sf_dir/block_linkscores.LinkR.bid.txt\n";
+	        print STDERR "       Run by specifying a new output directory\n";
+            exit(1);
+        }
+    }
+}
+
+if (defined($lr_map_dir)) {
+    if (lr_param_changed_mincon(\%params, \%prev_params) || sf_param_changed(\%params, \%prev_params, $resolution, $res_old)) {
+	    print STDERR "Calculating long read link scores...\n";
+        `$Bin/script/compute_linkscores.pl $lr_inter_f $lr_intra_f $min_con_read $lr_covdist_f $sf_dir/block_linkscores.LR.bid.txt`;
+    } else {
+        if (!(-f "$sf_dir/block_linkscores.LR.bid.txt")) {
+            print STDERR "\nError: File not found: $sf_dir/block_linkscores.LR.bid.txt\n";
+	        print STDERR "       Run by specifying a new output directory\n";
+            exit(1);
+        }
+    }
+}
+
+my $dtype = "CG";
+if (defined($sr_map_dir)) { $dtype .= ":SR"; }
+if (defined($linkr_map_dir)) { $dtype .= ":LnR";}
+if (defined($lr_map_dir)) { $dtype .= ":LR"; }
+    
+`$Bin/script/apply_labelcutoff.pl $dtype $tarspc $labelcutoff_f $out_dir`;
+`$Bin/script/combine_scores.pl $dtype $sf_dir/block_consscores.flt.bid.txt $sf_dir/block_linkscores.SR.flt.bid.txt $sf_dir/block_linkscores.LinkR.flt.bid.txt $sf_dir/block_linkscores.LR.flt.bid.txt $rp > $sf_dir/block_combinedscores.flt.bid.txt`;
+    
+if (defined($fjoinbreak_f) && -f $fjoinbreak_f) {
+    print STDERR "Finding the order and orientation of syntenic fragments...\n";
+    `$Bin/code/assembler $sf_dir/joinbreak_list.txt $min_adjscore $sf_dir/block_combinedscores.flt.bid.txt > $out_dir/raca2.flt.bid.out`;
+} else {
+    print STDERR "Finding the order and orientation of syntenic fragments...\n";
+    `$Bin/code/assembler none $min_adjscore $sf_dir/block_combinedscores.flt.bid.txt > $out_dir/raca2.flt.bid.out`;
+}
+
+my $ef = $fill + $ext;
+if($ef){
+	if (!defined($sr_map_dir) && !defined($lr_map_dir)) {
+		print STDERR "[Error] No read information. Cannot perform filling and extension\n";
+	}
+
+	`$Bin/script/refine_blocklist.pl $sf_dir/block_list.txt $sf_dir/block_list.ext.txt $fasize_f $fill_dir`;
+
+	my $sr_cnt_f = "$fill_dir/SR_scf_inter_block_info.txt";
+	if (defined($sr_map_dir)) {
+	    if (sf_param_changed(\%params, \%prev_params, $resolution, $res_old) || sr_param_changed(\%params, \%prev_params)) {
+	        print STDERR "Collecting short read link information for filling & extension...\n";
+	        `$Bin/script/wrap_get_interblock_scores.SR.pl $sr_libstat_f $fill_dir/block_list.update_scf.txt $fill_dir/block_list.update_scf.ext.txt $fasize_f $sr_map_dir $sr_cnt_f $fill_dir/read $numt $min_mapq`;
+	    } else {
+			if (!(-f $sr_cnt_f)) {
+    	        print STDERR "\nError: File not found: $sr_cnt_f\n";
+				print STDERR "       Run by specifying a new output directory\n";
+				exit(1);
+        	}
+    	}
+	}
+
+	my $linkr_cnt_f = "$fill_dir/LinkR_scf_inter_block_info.txt";
+	if (defined($linkr_map_dir)) {
+	    if (sf_param_changed(\%params, \%prev_params, $resolution, $res_old) || linkr_param_changed(\%params, \%prev_params)) {
+	        print STDERR "Collecting linked read link information for filling & extension...\n";
+	        `$Bin/script/wrap_get_interblock_scores.SR.pl $linkr_libstat_f $fill_dir/block_list.update_scf.txt $fill_dir/block_list.update_scf.ext.txt $fasize_f $linkr_map_dir $linkr_cnt_f $fill_dir/read $numt $min_mapq`;
+	    } else {
+			if (!(-f $linkr_cnt_f)) {
+    	        print STDERR "\nError: File not found: $linkr_cnt_f\n";
+				print STDERR "       Run by specifying a new output directory\n";
+				exit(1);
+        	}
+    	}
+	}
+
+	my $lr_cnt_f = "$fill_dir/LR_scf_inter_block_info.txt";
+	if (defined($lr_map_dir)) {
+	    if (sf_param_changed(\%params, \%prev_params, $resolution, $res_old) || lr_param_changed(\%params, \%prev_params)) {
+	        print STDERR "Collecting long read link information for filling & extension...\n";
+	        `$Bin/script/wrap_get_interblock_scores.LR.pl  $fill_dir/block_list.update_scf.txt $fill_dir/block_list.update_scf.txt $lr_map_dir $lr_cnt_f $fill_dir/read $numt $min_mapq`;
+	    } else {
+    	    if (!(-f $lr_cnt_f)) {
+    	        print STDERR "\nError: File not found: $lr_cnt_f\n";
+				print STDERR "       Run by specifying a new output directory\n";
+				exit(1);
+        	}
+        }
+    }
+
+	my $sr_link_f = "NA";
+	my $linkr_link_f = "NA";
+	my $lr_link_f = "NA";
+	my $flt_sr_link_f = "NA";
+	my $flt_linkr_link_f = "NA";
+	my $flt_lr_link_f = "NA";
+
+	if (defined($sr_map_dir)) {
+		$sr_link_f = "$fill_dir/scf_block_linkscores.SR.bid.txt";
+
+    	if (sr_param_changed_mincon(\%params, \%prev_params) || sf_param_changed(\%params, \%prev_params, $resolution, $res_old)) {
+		    print STDERR "Calculating short read link scores...\n";
+			`$Bin/script/compute_linkscores.pl $sr_cnt_f NA $min_con_read $sr_covdist_f $sr_link_f`;
+    	} else {
+			`$Bin/script/compute_linkscores.pl $sr_cnt_f NA $min_con_read $sr_covdist_f $sr_link_f`;
+        	if (!(-f "$sf_dir/block_linkscores.SR.bid.txt")) {
+        	    print STDERR "\nError: File not found: $sf_dir/block_linkscores.SR.bid.txt\n";
+	    	    print STDERR "       Run by specifying a new output directory\n";
+        	    exit(1);
+			}
+		}
+    }
+
+	if (defined($linkr_map_dir)) {
+		$linkr_link_f = "$fill_dir/scf_block_linkscores.LinkR.bid.txt";
+
+    	if (linkr_param_changed_mincon(\%params, \%prev_params) || sf_param_changed(\%params, \%prev_params, $resolution, $res_old)) {
+		    print STDERR "Calculating linked read link scores...\n";
+			`$Bin/script/compute_linkscores.pl $linkr_cnt_f NA $min_con_read $linkr_covdist_f $linkr_link_f`;
+    	} else {
+			`$Bin/script/compute_linkscores.pl $linkr_cnt_f NA $min_con_read $linkr_covdist_f $linkr_link_f`;
+        	if (!(-f "$sf_dir/block_linkscores.LinkR.bid.txt")) {
+        	    print STDERR "\nError: File not found: $sf_dir/block_linkscores.LinkR.bid.txt\n";
+	    	    print STDERR "       Run by specifying a new output directory\n";
+        	    exit(1);
+			}
+		}
+    }
+
+	if (defined($lr_map_dir)) {
+		$lr_link_f = "$fill_dir/scf_block_linkscores.LR.bid.txt";
+
+	    if (lr_param_changed_mincon(\%params, \%prev_params) || sf_param_changed(\%params, \%prev_params, $resolution, $res_old)) {
+		    print STDERR "Calculating long read link scores...\n";
+	        `$Bin/script/compute_linkscores.pl $lr_inter_f NA $min_con_read $lr_covdist_f $lr_link_f`;
+	    } else {
+	        `$Bin/script/compute_linkscores.pl $lr_inter_f NA $min_con_read $lr_covdist_f $lr_link_f`;
+	        if (!(-f "$sf_dir/block_linkscores.LR.bid.txt")) {
+	            print STDERR "\nError: File not found: $sf_dir/block_linkscores.LR.bid.txt\n";
+		        print STDERR "       Run by specifying a new output directory\n";
+	            exit(1);
+	        }
+	    }
+	}
+
+	my $type = "";
+	if (defined($sr_map_dir)) { $type .= "SR"; }
+	if (defined($linkr_map_dir)) { $type .= ($type eq "") ? "LnR" : ":LnR";}
+	if (defined($lr_map_dir)) { $type .= ($type eq "") ? "LR" : ":LR" ; }
+
+	`$Bin/script/apply_labelcutoff.scf.pl $type $labelcutoff_f $fill_dir/`;
+
+	if($sr_link_f ne "NA"){
+		$flt_sr_link_f = "$fill_dir/scf_block_linkscores.SR.flt.bid.txt";
+	}
+	if($lr_link_f ne "NA"){
+		$flt_lr_link_f = "$fill_dir/scf_block_linkscores.LR.flt.bid.txt";
+	}
+	`$Bin/script/combine_scores.pl $dtype NA $fill_dir/scf_block_linkscores.SR.flt.bid.txt $fill_dir/scf_block_linkscores.LinkR.flt.bid.txt $fill_dir/scf_block_linkscores.LR.flt.bid.txt $rp > $fill_dir/scf_block_combinedscores.flt.bid.txt`;
+
+	`$Bin/code/fill_extension $fill $ext $out_dir/raca2.flt.bid.out $flt_sr_link_f $flt_lr_link_f > $fill_dir/scf_ext.bid.out`;
+	
+	`$Bin/script/update_bidfile.pl $out_dir/raca2.flt.bid.out $fill_dir/scf_ext.bid.out > $out_dir/raca2.flt.ext.bid.out`;
+
+	`$Bin/script/collect_adjinfo.pl $dtype $tarspc $out_dir/raca2.flt.ext.bid.out $sr_cnt_f $sr_intra_f $linkr_cnt_f $linkr_intra_f $lr_cnt_f $lr_intra_f $out_dir $ef`;
+	`$Bin/script/collect_adjinfo.all.pl $dtype $tarspc $sr_cnt_f $sr_intra_f $linkr_inter_f $linkr_intra_f $lr_cnt_f $lr_intra_f $out_dir`;
+
+	`$Bin/script/raca.bid2out.pl $out_dir/raca2.flt.ext.bid.out $fill_dir/block_list.update_scf.txt $sf_dir/block_combinedscores.flt.bid.txt $fill_dir/scf_block_combinedscores.flt.bid.txt > $out_dir/raca2.flt.out`;
+}else{
+	`$Bin/script/collect_adjinfo.pl $dtype $tarspc $out_dir/raca2.flt.bid.out $sr_inter_f $sr_intra_f $linkr_inter_f $linkr_intra_f $lr_inter_f $lr_intra_f $out_dir $ef`;
+	`$Bin/script/collect_adjinfo.all.pl $dtype $tarspc $sr_inter_f $sr_intra_f $linkr_inter_f $linkr_intra_f $lr_inter_f $lr_intra_f $out_dir`;
+
+	`$Bin/script/raca.bid2out.pl $out_dir/raca2.flt.bid.out $sf_dir/block_list.txt $sf_dir/block_combinedscores.flt.bid.txt > $out_dir/raca2.flt.out NA`;
+}
+
+`$Bin/script/create_pcfdata.pl $resolution RACA $tarspc $refspc $sf_dir $out_dir/raca2.flt.out $out_dir $seq_f $ef`;
+#`$Bin/script/count_Ns.pl $seq_f $fasize_f > $param_dir/gapsize.txt`;
+#`$Bin/script/find_diff_boundary.pl $out_dir $tarspc $param_dir/gapsize.txt > $out_dir/diff_intrajoin.txt`;
+
+open(F, "$sf_dir/ingroup.txt");
+while(<F>) {
+    chomp;
+    my $ing_spc = $_;
+    if ($ing_spc eq $tarspc) { next; }
+    `$Bin/script/get_refchr_conf.pl $ing_spc $out_dir/rec_chrs.$ing_spc.segments.refined.txt > $out_dir/${ing_spc}_conf.txt`;
+}
+close(F);
+
+`$Bin/script/refconf_genomes_order.pl $refspc $tarspc $sf_dir/Genomes.Order > $out_dir/ref_interchr.txt`;
+
+print STDERR "Done.\n";
+
+###############################################################
+sub read_parameters {
+	my $f = shift;
+	my %hs_params = ();
+
+    if (!(-f $f)) { usage("Invalid parameter file"); }
+
+	open(F,"$f");
+	while(<F>) {
+		chomp;
+		my $line = trim($_);
+		if ($line =~ /^#/ || $line eq "") { next; }
+		
+        my ($name, $value) = split(/=/);
+		$name = trim($name);
+		$value = trim($value);
+		
+        if (-f $value || -d $value) {
+			$hs_params{$name} = abs_path($value);
+		} else {
+			$hs_params{$name} = $value;
+		}
+	}
+	close(F);
+	
+    my @mnd_pars = ("SEQFILE", "REFSPC", "TARSPC", "TREE", "CHAINNET_DIR", 
+                    "CS:RS", "CS:RM", "CS:RW", "CS:RN", 
+                    "CM:RS", "CM:RM", "CM:RW", "CM:RN", 
+                    "CW:RS", "CW:RM", "CW:RW", "CW:RN", 
+                    "CN:RS", "CN:RM", "CN:RW", "CN:RN", 
+                    "MIN_CON_READ", "WINDOW_SIZE", "FLANK_SIZE", "MIN_MAPQ");
+    my @opt_pars = ("SR_MAPPING_DIR","LINKR_MAPPING_DIR", "LR_MAPPING_DIR", "FORCE_JOIN_BREAK");
+	
+    my $missed_pars = ""; 
+    foreach my $pname (@mnd_pars) {
+		if (!defined($hs_params{$pname})) { $missed_pars .= "$pname "; }
+	}
+		
+	if ($missed_pars ne "") {
+		print STDERR "\nError: Missing parameters: $missed_pars\n";
+		exit(1);
+	}	
+
+	return %hs_params;
+}
+
+sub sf_param_changed {
+    my $rhs_cur = shift;
+    my $rhs_old = shift;
+    my $res = shift;
+    my $res_old = shift;
+
+    if (keys %$rhs_old == 0) { return 1; }
+
+    if ($res != $res_old) { return 1; } 
+
+    foreach my $par ("REFSPC", "TARSPC", "TREE", "CHAINNET_DIR") {
+        my $val_old = $$rhs_old{$par};
+        my $val_cur = $$rhs_cur{$par};
+        if (!defined($val_old) || $val_old ne $val_cur) { return 1; }
+    }
+
+    return 0;
+}
+
+sub sr_param_changed {
+    my $rhs_cur = shift;
+    my $rhs_old = shift;
+
+    if (keys %$rhs_old == 0) { return 1; }
+
+    foreach my $par ("FLANK_SIZE", "WINDOW_SIZE", "SR_MAPPING_DIR") {
+        my $val_old = $$rhs_old{$par};
+        my $val_cur = $$rhs_cur{$par};
+        if (!defined($val_old) || $val_old ne $val_cur) { return 1; }
+    }
+
+    return 0;
+}
+
+sub sr_param_changed_mincon {
+    my $rhs_cur = shift;
+    my $rhs_old = shift;
+
+    if (keys %$rhs_old == 0) { return 1; }
+
+    foreach my $par ("FLANK_SIZE", "WINDOW_SIZE", "SR_MAPPING_DIR", "MIN_CON_READ") {
+        my $val_old = $$rhs_old{$par};
+        my $val_cur = $$rhs_cur{$par};
+        if (!defined($val_old) || $val_old ne $val_cur) { return 1; }
+    }
+
+    return 0;
+}
+
+sub lr_param_changed {
+    my $rhs_cur = shift;
+    my $rhs_old = shift;
+
+    if (keys %$rhs_old == 0) { return 1; }
+
+    foreach my $par ("FLANK_SIZE", "WINDOW_SIZE", "LR_MAPPING_DIR") {
+        my $val_old = $$rhs_old{$par};
+        my $val_cur = $$rhs_cur{$par};
+        if (!defined($val_old) || $val_old ne $val_cur) { return 1; }
+    }
+
+    return 0;
+}
+
+sub lr_param_changed_mincon {
+    my $rhs_cur = shift;
+    my $rhs_old = shift;
+
+    if (keys %$rhs_old == 0) { return 1; }
+
+    foreach my $par ("FLANK_SIZE", "WINDOW_SIZE", "LR_MAPPING_DIR", "MIN_CON_READ") {
+        my $val_old = $$rhs_old{$par};
+        my $val_cur = $$rhs_cur{$par};
+        if (!defined($val_old) || $val_old ne $val_cur) { return 1; }
+    }
+
+    return 0;
+}
+
+sub trim {
+	my $str = shift;
+	$str =~ s/^\s+//;
+	$str =~ s/\s+$//;
+	return $str;
+}
+
+sub usage {
+    my $err_msg = shift;
+
+    if (length($err_msg) > 0) {
+		print STDERR "\nError: $err_msg\n";
+    }
+
+	print STDERR "\nUsage: RACA2 -p <file path> -o <directory path> [-r <resolution>] [-s <min. adjacency score>] [-t <num threads>] [-rp]\n\n";
+	print STDERR "\t-p: (Mandatory) Path to the parameter file\n";
+	print STDERR "\t    Refer to the example file (params.txt) in the 'data' directory.\n\n";
+	print STDERR "\t-o: (Mandatory) Path to the output directory\n";
+	print STDERR "\t    This directory will be created and all result files will be written in the directory\n\n";
+	print STDERR "\t-r: (Optional) Syntenic fragment resolution (bp), default: 150000\n\n";
+	print STDERR "\t-s: (Optional) Minimum score for joining adjacent syntenic fragments, default: 0.01\n\n";
+	print STDERR "\t-t: (Optional) Number of threads, default: 4\n\n";
+	print STDERR "\t-rp: (Optional) ...\n\n";
+	print STDERR "\t-f: (Optional) Run filling step\n\n";
+	print STDERR "\t-e: (Optional) Run extension step.\n\n";
+
+    exit(1); 
+}
+
+sub write_labels {
+    my $rhs_params = shift;
+    my $out_f = shift;
+
+    open(O, ">$out_f");
+    foreach my $key (sort keys %$rhs_params) {
+        if ($key !~ /\S\S:\S\S/) { next; }
+        my $value = $$rhs_params{$key};
+        print O "$key\t$value\n"; 
+    }
+
+    close(O);
+}
+
+sub compare_parameters {
+    my $rhs_new_params = shift;
+    my $rhs_prev_params = shift;
+
+    my $mode = 0;
+
+    foreach my $key (sort keys %$rhs_new_params) {
+        if ($key !~ /\S\S:\S\S/) { next; }
+        my $new_value = $$rhs_new_params{$key};
+        my $prev_value = $$rhs_prev_params{$key};
+        
+        if ($new_value ne $prev_value) {
+            $mode = 1;
+            last;
+        }
+    }
+
+    return $mode;
+}

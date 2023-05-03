@@ -1,0 +1,25 @@
+# Last modification: 21.05.31
+
+- Add scaffold link filling script
+- Changed samtools path in long read counting script
+- Changed 'script/compute_linkscores.pl' to be availiable to work using only interblock score file
+
+- Checking of physical sequence overlap between two adjacent scaffolds was removed (script/create_chrs.pl)
+
+- [20.11.5] Changing '$block_f' value for the case of filling & extenseion (script/create_pcfdata.pl)
+- [20.11.5] Adding '$scf_score_f' argument & obtaining link scores from the filling & extenseion result (script/raca.bid2out.pl)
+- [20.11.5] Obtaining link scores from the filling & extenseion result (script/collect_adjinfo.pl)
+- [20.11.5] Passing 'na' value to reference chromosome information for the filling & extenseion result (script/collect_adjinfo.pl)
+
+- [20.11.12] Checking that input bamfile is sorted and sorting unsored bam file (script/process_mapfiles.LR.pl)
+- [20.11.12] Organizing output and log files (RACA2)
+- [20.11.27] Use 'block_list.txt' file instead of 'block_list.ext.txt' file for script/wrap_get_interblock_scores.LR.pl (RACA2 file)
+
+- [20.12.03] Fix the conditions under which the score combining step is executed
+
+- [21.05.31] Update makeBlocks script
+- [21.06.14] Fix the bug, missing "$" in updated bid out file, in update_bidfile.pl
+
+- [21.07.31] Changing the statistic for the insert size estimation from mean to median
+
+- [22.07.26] Update 'process_mapfiles.LR.pl' script to calculate physical coverage in parallel

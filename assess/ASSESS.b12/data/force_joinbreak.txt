@@ -1,0 +1,10 @@
+#scf10:700000-900000	break	
+#scf10:1400000-1500000	keep 
+scf10	break	
+scf20:700000-800000 keep	
+scf3:350000-400000 keep	
+scf17	break	
+scf25:120000-150000 break	
+scf25:300000-350000	keep 
+SF 60 61 break 
+
